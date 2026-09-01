@@ -32,8 +32,8 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  ZED_CLI_SHA: d00b1913d5ff34b65fc11222fa7b141207a025d0
-  ZED_E2E_SHA: 3b86ee6d55d1a74341a7fe95580b7e39e13d09cb
+  ZED_CLI_SHA: 71a8b4c45e1f8e938b33ef19cd1468b2741e58f9
+  ZED_E2E_SHA: 867948ff6221b9263d0e9852f17789940ab6722e
 
 jobs:
   edge-probe:
@@ -81,9 +81,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Check out canary package
+      - name: Check out isolated canary package
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: canary
           fetch-depth: 1
           persist-credentials: false
           show-progress: false
@@ -113,6 +115,7 @@ jobs:
           set -euo pipefail
           test "$(git -C product/zed-cli rev-parse HEAD)" = "$ZED_CLI_SHA"
           test "$(git -C product/zed-pkg-e2e rev-parse HEAD)" = "$ZED_E2E_SHA"
+          test ! -e canary/product
           python3 -m py_compile product/zed-pkg-e2e/scripts/zed_github_cloudflare_e2e.py
 
       - name: Install Rust
@@ -136,5 +139,5 @@ jobs:
           set -euo pipefail
           python3 product/zed-pkg-e2e/scripts/zed_github_cloudflare_e2e.py \
             --zed "$GITHUB_WORKSPACE/product/zed-cli/target/release/zed" \
-            --package-root "$GITHUB_WORKSPACE" \
+            --package-root "$GITHUB_WORKSPACE/canary" \
             --work-root "$RUNNER_TEMP/live-zed-cloudflare"
