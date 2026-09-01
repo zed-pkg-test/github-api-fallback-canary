@@ -36,6 +36,46 @@ env:
   ZED_E2E_SHA: 3b86ee6d55d1a74341a7fe95580b7e39e13d09cb
 
 jobs:
+  edge-probe:
+    name: Diagnose current registry edge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Print the public version response without credentials
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          url = "https://registry.zpkg.net/v1/packages/zed-pkg-test/github-api-fallback-canary/versions/0.0.2"
+          request = urllib.request.Request(
+              url,
+              headers={"Accept": "application/json", "User-Agent": "zed-edge-probe/1.0"},
+          )
+          try:
+              response = urllib.request.urlopen(request, timeout=20)
+          except urllib.error.HTTPError as error:
+              response = error
+          body = response.read(4096).decode("utf-8", errors="replace")
+          headers = {
+              key.lower(): value
+              for key, value in response.headers.items()
+              if key.lower() in {
+                  "content-type",
+                  "retry-after",
+                  "server",
+                  "x-zed-edge",
+                  "x-zed-source",
+                  "cf-ray",
+              }
+          }
+          print(json.dumps({"status": response.status, "headers": headers, "body": body}, indent=2))
+          if response.status != 200:
+              raise SystemExit(f"registry edge returned HTTP {response.status}")
+          PY
+
   live-round-trip:
     name: Publish, proxy, install, freeze
     runs-on: ubuntu-24.04
