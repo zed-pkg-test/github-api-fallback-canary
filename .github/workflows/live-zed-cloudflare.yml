@@ -1,0 +1,100 @@
+name: Live Zed GitHub and Cloudflare E2E
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/live-zed-cloudflare.yml"
+      - ".zpkg.toml"
+      - "src/payload.txt"
+      - "README.md"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/live-zed-cloudflare.yml"
+      - ".zpkg.toml"
+      - "src/payload.txt"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: live-zed-cloudflare-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  ZED_CLI_SHA: d00b1913d5ff34b65fc11222fa7b141207a025d0
+  ZED_E2E_SHA: 3b86ee6d55d1a74341a7fe95580b7e39e13d09cb
+
+jobs:
+  live-round-trip:
+    name: Publish, proxy, install, freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out canary package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out exact zed-cli candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: product/zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out exact E2E harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg-test/zed-pkg-e2e
+          ref: ${{ env.ZED_E2E_SHA }}
+          path: product/zed-pkg-e2e
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify immutable test inputs
+        run: |
+          set -euo pipefail
+          test "$(git -C product/zed-cli rev-parse HEAD)" = "$ZED_CLI_SHA"
+          test "$(git -C product/zed-pkg-e2e rev-parse HEAD)" = "$ZED_E2E_SHA"
+          python3 -m py_compile product/zed-pkg-e2e/scripts/zed_github_cloudflare_e2e.py
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+
+      - name: Build exact zed candidate
+        run: |
+          set -euo pipefail
+          cargo build \
+            --locked \
+            --release \
+            --manifest-path product/zed-cli/Cargo.toml \
+            --bin zed
+
+      - name: Exercise GitHub writes, Cloudflare reads, and direct GitHub installs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 product/zed-pkg-e2e/scripts/zed_github_cloudflare_e2e.py \
+            --zed "$GITHUB_WORKSPACE/product/zed-cli/target/release/zed" \
+            --package-root "$GITHUB_WORKSPACE" \
+            --work-root "$RUNNER_TEMP/live-zed-cloudflare"
