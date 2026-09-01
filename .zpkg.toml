@@ -1,8 +1,8 @@
 [package]
 org = "zed-pkg-test"
 name = "github-api-fallback-canary"
-version = "0.0.1"
-description = "Live GitHub API fallback canary"
+version = "0.0.2"
+description = "Live zed publish/install canary for GitHub and Cloudflare fallback"
 license = "MIT"
 
 [package.repository]
