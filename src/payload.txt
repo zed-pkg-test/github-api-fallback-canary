@@ -1,1 +1,1 @@
-real-zed-github-cloudflare-e2e-v0.0.5
+real-zed-github-cloudflare-e2e-v0.0.6
