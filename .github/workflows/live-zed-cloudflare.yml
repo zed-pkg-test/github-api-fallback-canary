@@ -32,7 +32,7 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  ZED_CLI_SHA: 40fe52dfa8ea1ca2a84e4f12587b08594a47d5f5
+  ZED_CLI_SHA: 072c99205be4ebb14fc9142a0237dda8b0a16d85
   ZED_E2E_SHA: 867948ff6221b9263d0e9852f17789940ab6722e
 
 jobs:
@@ -141,4 +141,4 @@ jobs:
             --zed "$GITHUB_WORKSPACE/product/zed-cli/target/release/zed" \
             --package-root "$GITHUB_WORKSPACE/canary" \
             --work-root "$RUNNER_TEMP/live-zed-cloudflare" \
-            --version 0.0.4
+            --version 0.0.5
