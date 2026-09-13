@@ -165,7 +165,20 @@ jobs:
               --adapter none \
               --allow-ecosystem-mismatch
           ) 2>&1 | tee "$RUNNER_TEMP/source-b.log"
-          cmp "$RUNNER_TEMP/lock-a" consumer/.zpkg.lock
+          sha256sum "$RUNNER_TEMP/lock-a" consumer/.zpkg.lock
+          if ! cmp -s "$RUNNER_TEMP/lock-a" consumer/.zpkg.lock; then
+            echo 'fresh fallback lock differs from first resolution:' >&2
+            diff -u "$RUNNER_TEMP/lock-a" consumer/.zpkg.lock || true
+            python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+          old = tomllib.loads(Path(__import__('os').environ['RUNNER_TEMP']).joinpath('lock-a').read_text())
+          new = tomllib.loads(Path('consumer/.zpkg.lock').read_text())
+          print('semantic old=', old)
+          print('semantic new=', new)
+          PY
+            exit 1
+          fi
 
       - name: Exercise zpkg.net first hop with the same packages
         env:
