@@ -20,7 +20,6 @@ defaults:
 env:
   ZED_CLI_SHA: a6795384d13fa903dae9d902ba8e207888f437f3
   DEAD_REGISTRY: https://registry-write-intentionally-unavailable.invalid
-  DEAD_R2: http://127.0.0.1:1
 
 jobs:
   authenticated-source-archive-matrix:
@@ -29,7 +28,7 @@ jobs:
     timeout-minutes: 45
     env:
       ZED_PKG_SOURCE_FALLBACK: "true"
-      ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+      ZED_PKG_R2_PUBLIC_BASE: http://127.0.0.1:1
       ZED_PKG_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Check out exact zed-cli candidate
@@ -146,7 +145,7 @@ jobs:
     timeout-minutes: 30
     env:
       ZED_PKG_SOURCE_FALLBACK: "true"
-      ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+      ZED_PKG_R2_PUBLIC_BASE: http://127.0.0.1:1
     steps:
       - name: Check out exact zed-cli candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
