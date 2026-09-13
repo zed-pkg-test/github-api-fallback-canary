@@ -80,6 +80,7 @@ jobs:
           EOF
 
       - name: Force source fallback and stitch three packages
+        working-directory: consumer
         env:
           ZED_PKG_SOURCE_FALLBACK: "true"
           ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
@@ -91,10 +92,10 @@ jobs:
             --install-mode copy --adapter none --allow-ecosystem-mismatch \
             2>&1 | tee "$RUNNER_TEMP/source.log"
           grep -F "using GitHub" "$RUNNER_TEMP/source.log"
-          test -s consumer/.zpkg.lock
+          test -s .zpkg.lock
           python3 - <<'PY'
           from pathlib import Path
-          manifests = list(Path("consumer/zed_modules").rglob(".zpkg.toml"))
+          manifests = list(Path("zed_modules").rglob(".zpkg.toml"))
           text = "\n".join(p.read_text(encoding="utf-8") for p in manifests)
           expected = ("go-lib", "python-lib", "dart-lib")
           missing = [name for name in expected if f'name = "{name}"' not in text]
@@ -102,9 +103,10 @@ jobs:
               raise SystemExit(f"missing installed packages {missing}; manifests={manifests}")
           print(f"installed manifests: {[str(p) for p in manifests]}")
           PY
-          cp consumer/.zpkg.lock "$RUNNER_TEMP/lock-first"
+          cp .zpkg.lock "$RUNNER_TEMP/lock-first"
 
       - name: Frozen reinstall from clean store remains stable
+        working-directory: consumer
         env:
           ZED_PKG_SOURCE_FALLBACK: "true"
           ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
@@ -112,14 +114,15 @@ jobs:
           set -Eeuo pipefail
           ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
           unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
-          rm -rf consumer/zed_modules "$RUNNER_TEMP/zed-home-frozen"
+          rm -rf zed_modules "$RUNNER_TEMP/zed-home-frozen"
           "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-frozen" install --frozen \
             --install-mode copy --adapter none --allow-ecosystem-mismatch \
             2>&1 | tee "$RUNNER_TEMP/frozen.log"
-          cmp "$RUNNER_TEMP/lock-first" consumer/.zpkg.lock
-          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
+          cmp "$RUNNER_TEMP/lock-first" .zpkg.lock
+          test "$(find zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
 
       - name: Probe and exercise zpkg.net first hop
+        working-directory: consumer
         env:
           ZED_PKG_SOURCE_FALLBACK: "true"
           ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
@@ -137,9 +140,9 @@ jobs:
               res = exc
           print("zpkg.net", res.status, res.read(512).decode("utf-8", errors="replace"))
           PY
-          rm -rf consumer/zed_modules consumer/.zpkg.lock "$RUNNER_TEMP/zed-home-edge"
+          rm -rf zed_modules .zpkg.lock "$RUNNER_TEMP/zed-home-edge"
           "$ZED" --registry https://zpkg.net --home "$RUNNER_TEMP/zed-home-edge" install \
             --install-mode copy --adapter none --allow-ecosystem-mismatch \
             2>&1 | tee "$RUNNER_TEMP/edge.log"
-          test -s consumer/.zpkg.lock
-          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
+          test -s .zpkg.lock
+          test "$(find zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
