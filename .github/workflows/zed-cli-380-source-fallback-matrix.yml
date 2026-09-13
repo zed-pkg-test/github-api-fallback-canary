@@ -1,0 +1,213 @@
+name: zed-cli 380 source fallback matrix
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/zed-cli-380-source-fallback-matrix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-cli-380-source-fallback-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ZED_CLI_SHA: 9a2d2bbcc682801ef26a479db22f1bb9a0d1142d
+  DEAD_REGISTRY: https://registry-write-intentionally-unavailable.invalid
+  DEAD_R2: http://127.0.0.1:1
+
+jobs:
+  source-archive-matrix:
+    name: GitHub source archives across zed-pkg-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact zed-cli candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: product/zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install candidate Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+
+      - name: Refresh known stale zed-lock entry in runner
+        working-directory: product/zed-cli
+        run: |
+          set -Eeuo pipefail
+          cargo update -p zed-lock
+          git diff -- Cargo.lock
+          test "$(git diff --name-only)" = "Cargo.lock"
+
+      - name: Build exact candidate
+        run: |
+          set -Eeuo pipefail
+          cargo build \
+            --locked \
+            --release \
+            --manifest-path product/zed-cli/Cargo.toml \
+            --bin zed
+          test "$(git -C product/zed-cli rev-parse HEAD)" = "$ZED_CLI_SHA"
+
+      - name: Create three-package consumer
+        run: |
+          set -Eeuo pipefail
+          mkdir -p consumer
+          cat > consumer/.zpkg.toml <<'EOF'
+          [package]
+          org = "zed-pkg-test"
+          name = "source-fallback-matrix-consumer"
+          version = "0.0.0"
+          description = "Exercises source archive fallback across test packages"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/github-api-fallback-canary"
+
+          [install]
+          dir = "zed_modules"
+          adapter = "none"
+
+          [dependencies]
+          "zed-pkg-test/go-lib" = "=1.0.0"
+          "zed-pkg-test/python-lib" = "=1.0.0"
+          "zed-pkg-test/dart-lib" = "=1.0.0"
+          EOF
+
+      - name: Force registry failure and install from GitHub source archives
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZED_PKG_SOURCE_FALLBACK: "true"
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          "$ZED" \
+            --registry "$DEAD_REGISTRY" \
+            --home "$RUNNER_TEMP/zed-home-source-a" \
+            install \
+            --install-mode copy \
+            --adapter none \
+            --allow-ecosystem-mismatch \
+            2>&1 | tee "$RUNNER_TEMP/source-a.log"
+          grep -F "using GitHub" "$RUNNER_TEMP/source-a.log"
+          test -s consumer/.zpkg.lock
+
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path("consumer/zed_modules")
+          manifests = list(root.rglob(".zpkg.toml"))
+          text = "\n".join(path.read_text(encoding="utf-8") for path in manifests)
+          expected = ("go-lib", "python-lib", "dart-lib")
+          missing = [name for name in expected if f'name = "{name}"' not in text]
+          if missing:
+              raise SystemExit(f"missing installed manifests for: {missing}; manifests={manifests}")
+          if len(manifests) < 3:
+              raise SystemExit(f"expected at least three installed package manifests, found {manifests}")
+          PY
+
+          sha256sum consumer/.zpkg.lock | tee "$RUNNER_TEMP/lock-a.sha"
+          cp consumer/.zpkg.lock "$RUNNER_TEMP/lock-a"
+
+      - name: Frozen reinstall from a clean home is lock-stable
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZED_PKG_SOURCE_FALLBACK: "true"
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          rm -rf consumer/zed_modules "$RUNNER_TEMP/zed-home-source-frozen"
+          "$ZED" \
+            --registry "$DEAD_REGISTRY" \
+            --home "$RUNNER_TEMP/zed-home-source-frozen" \
+            install \
+            --frozen \
+            --install-mode copy \
+            --adapter none \
+            --allow-ecosystem-mismatch \
+            2>&1 | tee "$RUNNER_TEMP/source-frozen.log"
+          cmp "$RUNNER_TEMP/lock-a" consumer/.zpkg.lock
+          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
+
+      - name: Fresh fallback resolution is deterministic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZED_PKG_SOURCE_FALLBACK: "true"
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          rm -rf consumer/zed_modules consumer/.zpkg.lock "$RUNNER_TEMP/zed-home-source-b"
+          "$ZED" \
+            --registry "$DEAD_REGISTRY" \
+            --home "$RUNNER_TEMP/zed-home-source-b" \
+            install \
+            --install-mode copy \
+            --adapter none \
+            --allow-ecosystem-mismatch \
+            2>&1 | tee "$RUNNER_TEMP/source-b.log"
+          cmp "$RUNNER_TEMP/lock-a" consumer/.zpkg.lock
+
+      - name: Exercise zpkg.net first hop with the same packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZED_PKG_SOURCE_FALLBACK: "true"
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          python3 - <<'PY'
+          import urllib.error, urllib.request
+          url = "https://zpkg.net/v1/packages/zed-pkg-test/go-lib/versions/1.0.0"
+          req = urllib.request.Request(url, headers={"Accept":"application/json", "User-Agent":"zed-pkg-test-source-matrix/1.0"})
+          try:
+              res = urllib.request.urlopen(req, timeout=20)
+          except urllib.error.HTTPError as exc:
+              res = exc
+          body = res.read(512).decode("utf-8", errors="replace")
+          print(f"zpkg.net probe status={res.status} body={body}")
+          PY
+
+          rm -rf consumer/zed_modules consumer/.zpkg.lock "$RUNNER_TEMP/zed-home-edge"
+          "$ZED" \
+            --registry https://zpkg.net \
+            --home "$RUNNER_TEMP/zed-home-edge" \
+            install \
+            --install-mode copy \
+            --adapter none \
+            --allow-ecosystem-mismatch \
+            2>&1 | tee "$RUNNER_TEMP/edge.log"
+          test -s consumer/.zpkg.lock
+          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
+
+      - name: Exercise the CLI default registry alias
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZED_PKG_SOURCE_FALLBACK: "true"
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          rm -rf consumer/zed_modules consumer/.zpkg.lock "$RUNNER_TEMP/zed-home-default"
+          "$ZED" \
+            --home "$RUNNER_TEMP/zed-home-default" \
+            install \
+            --install-mode copy \
+            --adapter none \
+            --allow-ecosystem-mismatch \
+            2>&1 | tee "$RUNNER_TEMP/default.log"
+          test -s consumer/.zpkg.lock
+          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
