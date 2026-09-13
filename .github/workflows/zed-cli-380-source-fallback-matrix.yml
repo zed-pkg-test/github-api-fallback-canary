@@ -1,0 +1,217 @@
+name: zed-cli 380 source fallback matrix
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/zed-cli-380-source-fallback-matrix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-cli-380-source-fallback-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ZED_CLI_SHA: a6795384d13fa903dae9d902ba8e207888f437f3
+  DEAD_REGISTRY: https://registry-write-intentionally-unavailable.invalid
+
+jobs:
+  authenticated-source-archive-matrix:
+    name: authenticated GitHub fallback + lock stability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ZED_PKG_SOURCE_FALLBACK: "true"
+      ZED_PKG_R2_PUBLIC_BASE: http://127.0.0.1:1
+      ZED_PKG_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out exact zed-cli candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: product/zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install candidate Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+
+      - name: Refresh known stale zed-lock entry in runner
+        working-directory: product/zed-cli
+        run: |
+          set -Eeuo pipefail
+          cargo update -p zed-lock
+          test "$(git diff --name-only)" = "Cargo.lock"
+
+      - name: Build exact candidate
+        run: |
+          set -Eeuo pipefail
+          cargo build --locked --release --manifest-path product/zed-cli/Cargo.toml --bin zed
+          test "$(git -C product/zed-cli rev-parse HEAD)" = "$ZED_CLI_SHA"
+
+      - name: Create three-package consumer
+        run: |
+          set -Eeuo pipefail
+          mkdir -p consumer
+          cat > consumer/.zpkg.toml <<'EOF'
+          [package]
+          org = "zed-pkg-test"
+          name = "source-fallback-matrix-consumer"
+          version = "0.0.0"
+          description = "Exercises authenticated source archive fallback across test packages"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/github-api-fallback-canary"
+
+          [install]
+          dir = "zed_modules"
+          adapter = "none"
+
+          [dependencies]
+          "zed-pkg-test/go-lib" = "=1.0.0"
+          "zed-pkg-test/python-lib" = "=1.0.0"
+          "zed-pkg-test/dart-lib" = "=1.0.0"
+          EOF
+
+      - name: Force registry failure and install from GitHub source archives
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          (
+            cd consumer
+            "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-source-a" install \
+              --install-mode copy --adapter none --allow-ecosystem-mismatch
+          ) 2>&1 | tee "$RUNNER_TEMP/source-a.log"
+          grep -F "using GitHub" "$RUNNER_TEMP/source-a.log"
+          test -s consumer/.zpkg.lock
+          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
+          sha256sum consumer/.zpkg.lock | tee "$RUNNER_TEMP/lock-a.sha"
+          cp consumer/.zpkg.lock "$RUNNER_TEMP/lock-a"
+
+      - name: Frozen reinstall from a clean home is lock-stable
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          rm -rf consumer/zed_modules "$RUNNER_TEMP/zed-home-source-frozen"
+          (
+            cd consumer
+            "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-source-frozen" install \
+              --frozen --install-mode copy --adapter none --allow-ecosystem-mismatch
+          ) 2>&1 | tee "$RUNNER_TEMP/source-frozen.log"
+          cmp "$RUNNER_TEMP/lock-a" consumer/.zpkg.lock
+          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
+
+      - name: Fresh authenticated fallback resolution is deterministic
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          rm -rf consumer/zed_modules consumer/.zpkg.lock "$RUNNER_TEMP/zed-home-source-b"
+          (
+            cd consumer
+            "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-source-b" install \
+              --install-mode copy --adapter none --allow-ecosystem-mismatch
+          ) 2>&1 | tee "$RUNNER_TEMP/source-b.log"
+          cmp "$RUNNER_TEMP/lock-a" consumer/.zpkg.lock
+          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 3
+
+      - name: Retain authenticated fallback evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zed-cli-380-authenticated-fallback-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/lock-a
+            ${{ runner.temp }}/lock-a.sha
+            ${{ runner.temp }}/source-a.log
+            ${{ runner.temp }}/source-b.log
+            ${{ runner.temp }}/source-frozen.log
+            consumer/.zpkg.lock
+
+  anonymous-public-smoke:
+    name: anonymous public GitHub fallback smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ZED_PKG_SOURCE_FALLBACK: "true"
+      ZED_PKG_R2_PUBLIC_BASE: http://127.0.0.1:1
+    steps:
+      - name: Check out exact zed-cli candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: product/zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install candidate Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+
+      - name: Refresh known stale zed-lock entry and build candidate
+        working-directory: product/zed-cli
+        run: |
+          set -Eeuo pipefail
+          cargo update -p zed-lock
+          test "$(git diff --name-only)" = "Cargo.lock"
+          cargo build --locked --release --bin zed
+
+      - name: Create one-package anonymous consumer
+        run: |
+          set -Eeuo pipefail
+          mkdir -p anonymous-consumer
+          cat > anonymous-consumer/.zpkg.toml <<'EOF'
+          [package]
+          org = "zed-pkg-test"
+          name = "anonymous-source-fallback-smoke"
+          version = "0.0.0"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/github-api-fallback-canary"
+
+          [install]
+          dir = "zed_modules"
+          adapter = "none"
+
+          [dependencies]
+          "zed-pkg-test/go-lib" = "=1.0.0"
+          EOF
+
+      - name: Install one public package with no GitHub token
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          (
+            cd anonymous-consumer
+            "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-anonymous" install \
+              --install-mode copy --adapter none --allow-ecosystem-mismatch
+          ) 2>&1 | tee "$RUNNER_TEMP/anonymous.log"
+          grep -F "using GitHub" "$RUNNER_TEMP/anonymous.log"
+          test -s anonymous-consumer/.zpkg.lock
+          test "$(find anonymous-consumer/zed_modules -name .zpkg.toml -type f | wc -l)" -ge 1
+
+      - name: Retain anonymous fallback evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zed-cli-380-anonymous-fallback-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/anonymous.log
+            anonymous-consumer/.zpkg.lock
