@@ -16,7 +16,7 @@ defaults:
     shell: bash
 
 env:
-  ZED_CLI_SHA: 9a2d2bbcc682801ef26a479db22f1bb9a0d1142d
+  ZED_CLI_SHA: a6795384d13fa903dae9d902ba8e207888f437f3
   DEAD_REGISTRY: https://registry-write-intentionally-unavailable.invalid
   DEAD_R2: http://127.0.0.1:1
 
