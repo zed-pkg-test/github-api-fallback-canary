@@ -1,3 +1,4 @@
+# Tracks zed-pkg-test/zed-pkg-e2e#189; touching this file intentionally exercises its path-filtered PR trigger.
 name: zed-cli 388 GitHub-only outage certification
 
 on:
