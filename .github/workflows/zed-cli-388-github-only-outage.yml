@@ -14,18 +14,17 @@ defaults:
     shell: bash
 
 env:
-  ZED_CLI_SHA: 7032ceb8423ec97437d4103e7939a994606bc386
+  ZED_CLI_SHA: 7032ceb8423ec97437d4103e7938736d33c9b23
   DEAD_REGISTRY: https://zed-control-plane-intentionally-unavailable.invalid
   DEAD_R2: http://127.0.0.1:1
+  ZED_PKG_SOURCE_FALLBACK: 'true'
+  ZED_PKG_R2_PUBLIC_BASE: http://127.0.0.1:1
 
 jobs:
   github-only-five-language:
     name: five ecosystems restore without Zed infrastructure
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    env:
-      ZED_PKG_SOURCE_FALLBACK: 'true'
-      ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
     steps:
       - name: Check out test repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
