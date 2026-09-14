@@ -14,7 +14,7 @@ defaults:
     shell: bash
 
 env:
-  ZED_CLI_SHA: 7032ceb8423ec97437d4103e7939a994606bc386
+  ZED_CLI_SHA: f286e574c20ab838b49b3039b1662eff4d5fed85
   DEAD_REGISTRY: https://zed-control-plane-intentionally-unavailable.invalid
   DEAD_R2: http://127.0.0.1:1
   ZED_PKG_SOURCE_FALLBACK: 'true'
