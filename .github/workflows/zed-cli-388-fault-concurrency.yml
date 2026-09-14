@@ -1,0 +1,157 @@
+name: zed-cli 388 partial-outage and concurrency certification
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/zed-cli-388-fault-concurrency.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ZED_CLI_SHA: f3123ebebadaede30da97a31a586288c3b15609d
+  DEAD_REGISTRY: https://zed-control-plane-intentionally-unavailable.invalid
+  ZED_PKG_SOURCE_FALLBACK: 'true'
+  ZED_PKG_R2_PUBLIC_BASE: http://127.0.0.1:1
+
+jobs:
+  partial-outage-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out canary
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out exact zed-cli candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: product/zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.98.1'
+
+      - name: Build exact candidate and run partial-GitHub-outage contracts
+        working-directory: product/zed-cli
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$ZED_CLI_SHA"
+          cargo build --locked --release --bin zed
+          cargo test --locked source_fallback::tests::github_rest_quota_and_server_failures_are_degradable -- --nocapture
+          cargo test --locked source_fallback::tests::smart_http_refs_recover_default_branch_and_peeled_tags -- --nocapture
+          cargo test --locked source_fallback::tests::github_sources_precede_zed_owned_r2_during_fallback -- --nocapture
+
+      - name: Create shared five-ecosystem consumer template
+        run: |
+          set -Eeuo pipefail
+          mkdir -p template
+          cat > template/.zpkg.toml <<'EOF'
+          [package]
+          org = "zed-pkg-test"
+          name = "zed-cli-388-concurrency-consumer"
+          version = "0.0.0"
+          description = "Concurrent independent outage recovery certification"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/github-api-fallback-canary"
+
+          [install]
+          dir = "zed_modules"
+          adapter = "none"
+
+          [dependencies]
+          "zed-pkg-test/go-lib" = "=1.0.0"
+          "zed-pkg-test/python-lib" = "=1.0.0"
+          "zed-pkg-test/dart-lib" = "=1.0.0"
+          "zed-pkg-test/node-lib" = "=1.0.0"
+          "zed-pkg-test/gleam-lib" = "=1.0.0"
+          EOF
+          for i in 1 2 3 4; do cp -R template "consumer-$i"; done
+
+      - name: Resolve four clean homes concurrently with Zed infrastructure unavailable
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          pids=()
+          for i in 1 2 3 4; do
+            (
+              cd "consumer-$i"
+              "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-$i" install \
+                --install-mode copy --adapter none --allow-ecosystem-mismatch
+            ) >"$RUNNER_TEMP/concurrent-$i.log" 2>&1 &
+            pids+=("$!")
+          done
+          failed=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || failed=1
+          done
+          for i in 1 2 3 4; do cat "$RUNNER_TEMP/concurrent-$i.log"; done
+          test "$failed" -eq 0
+          for i in 2 3 4; do cmp consumer-1/.zpkg.lock "consumer-$i/.zpkg.lock"; done
+          for i in 1 2 3 4; do
+            test "$(find "consumer-$i/zed_modules" -name .zpkg.toml -type f | wc -l)" -ge 5
+            grep -E -q 'using GitHub(-first)? fallback' "$RUNNER_TEMP/concurrent-$i.log"
+          done
+
+      - name: Bound all-sources-unavailable failure
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed"
+          mkdir -p missing
+          cat > missing/.zpkg.toml <<'EOF'
+          [package]
+          org = "zed-pkg-test"
+          name = "zed-cli-388-missing-consumer"
+          version = "0.0.0"
+          description = "Bounded failure canary"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/github-api-fallback-canary"
+
+          [install]
+          dir = "zed_modules"
+          adapter = "none"
+
+          [dependencies]
+          "zed-pkg-test/definitely-missing-package-388" = "=9.9.9"
+          EOF
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          set +e
+          (
+            cd missing
+            timeout 60s "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-missing" install \
+              --install-mode copy --adapter none --allow-ecosystem-mismatch
+          ) >"$RUNNER_TEMP/all-sources-down.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/all-sources-down.log"
+          test "$status" -ne 0
+          test "$status" -ne 124
+
+      - name: Retain sanitized fault/concurrency evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zed-cli-388-fault-concurrency-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/concurrent-*.log
+            ${{ runner.temp }}/all-sources-down.log
+            consumer-*/.zpkg.lock
