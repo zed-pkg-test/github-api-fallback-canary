@@ -1,0 +1,139 @@
+name: zed-cli 388 cross-platform GitHub-only certification
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/zed-cli-388-cross-platform-github-only.yml'
+      - '.github/workflows/zed-cli-388-github-only-outage.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-cli-388-cross-platform-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ZED_CLI_SHA: f3123ebebadaede30da97a31a586288c3b15609d
+  DEAD_REGISTRY: https://zed-control-plane-intentionally-unavailable.invalid
+  ZED_PKG_SOURCE_FALLBACK: 'true'
+  ZED_PKG_R2_PUBLIC_BASE: http://127.0.0.1:1
+
+jobs:
+  github-only-cross-platform:
+    name: ${{ matrix.os }} clean-home normal + frozen
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-14
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    steps:
+      - name: Check out test repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out exact zed-cli candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: product/zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.98.1'
+
+      - name: Build exact candidate
+        working-directory: product/zed-cli
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$ZED_CLI_SHA"
+          cargo build --locked --release --bin zed
+
+      - name: Create clean public consumer
+        run: |
+          set -Eeuo pipefail
+          mkdir -p consumer
+          cat > consumer/.zpkg.toml <<'EOF'
+          [package]
+          org = "zed-pkg-test"
+          name = "zed-cli-388-cross-platform-consumer"
+          version = "0.0.0"
+          description = "Cross-platform GitHub-only outage certification"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/github-api-fallback-canary"
+
+          [install]
+          dir = "zed_modules"
+          adapter = "none"
+
+          [dependencies]
+          "zed-pkg-test/go-lib" = "=1.0.0"
+          EOF
+
+      - name: Normal install with Zed control plane unavailable
+        run: |
+          set -Eeuo pipefail
+          case "$RUNNER_OS" in
+            Windows) ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed.exe" ;;
+            *) ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed" ;;
+          esac
+          test -x "$ZED"
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          rm -rf "$RUNNER_TEMP/zed-home-normal" consumer/zed_modules consumer/.zpkg.lock
+          (
+            cd consumer
+            "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-normal" install \
+              --install-mode copy --adapter none --allow-ecosystem-mismatch
+          ) 2>&1 | tee "$RUNNER_TEMP/github-normal.log"
+          test -s consumer/.zpkg.lock
+          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l | tr -d ' ')" -ge 1
+          grep -E -q 'using GitHub(-first)? fallback|using GitHub' "$RUNNER_TEMP/github-normal.log"
+          cp consumer/.zpkg.lock "$RUNNER_TEMP/lock-normal"
+
+      - name: Frozen replay from an independent empty home
+        run: |
+          set -Eeuo pipefail
+          case "$RUNNER_OS" in
+            Windows) ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed.exe" ;;
+            *) ZED="$GITHUB_WORKSPACE/product/zed-cli/target/release/zed" ;;
+          esac
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          rm -rf "$RUNNER_TEMP/zed-home-frozen" consumer/zed_modules
+          (
+            cd consumer
+            "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-frozen" install --frozen \
+              --install-mode copy --adapter none --allow-ecosystem-mismatch
+          ) 2>&1 | tee "$RUNNER_TEMP/github-frozen.log"
+          cmp "$RUNNER_TEMP/lock-normal" consumer/.zpkg.lock
+          test "$(find consumer/zed_modules -name .zpkg.toml -type f | wc -l | tr -d ' ')" -ge 1
+
+      - name: Retain sanitized certification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zed-cli-388-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/lock-normal
+            ${{ runner.temp }}/github-normal.log
+            ${{ runner.temp }}/github-frozen.log
+            consumer/.zpkg.lock
